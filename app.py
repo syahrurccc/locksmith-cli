@@ -36,7 +36,7 @@ def main():
 
         invalid_files = []
         invalid_logs = []
-        
+
         for filename in args.paths:
             if not filename.endswith(".enc"):
                 invalid_logs.append(f"{filename} cannot be decrypted")
@@ -171,7 +171,6 @@ def write_logs(fail_logs):
     with open("logs.txt", "w") as logs:
         for log in fail_logs:
             logs.write(log + "\n")
-        
 
 if __name__=="__main__":
     main()
