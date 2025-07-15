@@ -97,7 +97,7 @@ def encrypt(paths: list):
 
     return encrypt_count, fail_count
 
-    
+
 def decrypt(paths: list, key_path: str):
     if not os.path.exists(key_path):
         sys.exit("Key path does not exist")
