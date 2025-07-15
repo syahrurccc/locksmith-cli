@@ -172,5 +172,6 @@ def write_logs(fail_logs):
         for log in fail_logs:
             logs.write(log + "\n")
 
+
 if __name__=="__main__":
     main()
