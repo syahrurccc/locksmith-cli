@@ -146,7 +146,6 @@ def decrypt(paths: list, key_path: str):
     return decrypt_count, fail_count, fail_logs
 
 
-
 def save_key(key_map, key_path="keys.json"):
     if os.path.exists(key_path):
         with open(key_path, "r") as file:
