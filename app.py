@@ -1,11 +1,21 @@
-from cryptography.fernet import Fernet
 import argparse
+from cryptography.fernet import Fernet, InvalidToken
+from pathlib import Path
 import json
-import os
 import sys
 
 
 def main():
+    args = parse_arguments()
+
+    if args.encrypt:
+        print(validate_args(args.paths, is_encrypt=True))
+
+    elif args.decrypt:
+        print(validate_args(args.paths, args.key, is_encrypt=False))
+        
+
+def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Encrypt or Decrypt file(s) or folder(s)")
 
@@ -18,43 +28,52 @@ def main():
                     help="Decrypt file(s)/folder(s)", 
                     action="store_true")
     parser.add_argument("-k", "--key",
+                        type=Path,
                         help="JSON file path containing key to decrypt")
-    parser.add_argument("paths", nargs=1, 
+    parser.add_argument("paths", nargs="+", 
                         help="The name of file(s)/folder(s) you want to encrypt/decrypt")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    if args.encrypt:
-        n, fail = encrypt(args.paths)
-        if fail == 0:
-            print(f"Encrypted: {n} file(s), failed: {fail} file(s), see logs.txt for details")
-        else:
-            print(f"Successfully encrypted {n} file(s)")
 
-    elif args.decrypt:
-        if not args.key:
+def validate_args(paths, key_path=None, is_encrypt=True):
+    
+    if not is_encrypt:
+        if not key_path:
             sys.exit("No keys provided")
+        elif not key_path.exists():
+            sys.exit("Key path does not exist")
 
-        invalid_files = []
-        invalid_logs = []
+    valid_paths = set()
+    invalid_paths = []
+    invalid_logs = []
+    mode = "encrypt" if is_encrypt else "decrypt"
+    
+    for path in paths:
+        path = Path(path)
+        if not path.exists():
+            invalid_logs.append(f"{path} does not exists")
+            invalid_paths.append(path)
+        elif path.is_file():
+            if path.suffix != ".enc" and not is_encrypt:
+                invalid_logs.append(f"{path} cannot be decrypted")
+                invalid_paths.append(path)
+            else:
+                valid_paths.add(path)
+        elif path.is_dir():
+            warning = input(f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] ")
+            if warning.lower().strip() in ["y", "yes"]:
+                valid_paths.update([file for file in path.rglob("*") if file.is_file()])
+            else:
+                valid_paths.update([file for file in path.iterdir() if file.is_file()])
 
-        for filename in args.paths:
-            if not filename.endswith(".enc"):
-                invalid_logs.append(f"{filename} cannot be decrypted")
-                invalid_files.append(filename)
-
-            elif not os.path.exists(filename):
-                invalid_logs.append(f"{filename} does not exists")
-                invalid_files.append(filename)
-
-        valid_files = [file for file in args.paths if file not in invalid_files]
-
-        n, fail, fail_logs = decrypt(valid_files, args.key)
-        
-        if fail > 0 or len(invalid_files) > 0:
-            write_logs(fail_logs + invalid_logs)
-            print(f"Decrypted: {n} file(s), failed: {fail} file(s), invalid: {len(invalid_files)} file(s), see logs.txt for details")
-        else:
-            print(f"Successfully decrypted {n} file(s)")
+    n, fail, fail_logs = encrypt(list(valid_paths)) if is_encrypt else decrypt(list(valid_paths), key_path)
+    status = "encrypted" if is_encrypt else "decrypted"
+    
+    if fail > 0 or len(invalid_paths) > 0:
+        write_logs(fail_logs + invalid_logs)
+        return f"{status.capitalize()}: {n} file(s), failed: {fail} file(s), invalid: {len(invalid_paths)} file(s), see logs.txt for details"
+    else:
+        return f"Successfully {status} {n} file(s)"
 
 
 def encrypt(paths: list):
@@ -63,83 +82,80 @@ def encrypt(paths: list):
     fail_count = 0
     fail_logs = []
 
-    for path in paths:
+    for file_path in paths:
+        file_path = Path(file_path)
+
         key = Fernet.generate_key()
         f = Fernet(key)
 
-        try:
-            with open(path, "rb") as original_file:
-                data = original_file.read()
-
-            encrypted_data = f.encrypt(data)
-        except OSError:
-            fail_logs.append(f"{path} cannot be opened")
-            fail_count += 1
-            continue
-
-        encrypted_path = path + ".enc"
-        if os.path.exists(encrypted_path):
+        encrypted_path = Path(f"{file_path}.enc")
+        if encrypted_path.exists():
             warning = input(f"WARNING: {encrypted_path} file already exists, do you want to overwrite it? [y/N] ")
             if warning.lower().strip() not in ["y", "yes"]:
                 fail_logs.append(f"{encrypted_path} already exists")
                 fail_count += 1
                 continue
-        
-        with open(encrypted_path, "wb") as encrypted_file:
-            encrypted_file.write(encrypted_data)
-        os.remove(path)
 
-        key_map[encrypted_path] = key.decode()
+        try:
+            original_data = file_path.read_bytes()
+            encrypted_data = f.encrypt(original_data)
+        except OSError:
+            fail_logs.append(f"{file_path} cannot be opened")
+            fail_count += 1
+            continue
+
+        encrypted_path.write_bytes(encrypted_data)
+        file_path.unlink()
+
+        key_map[str(encrypted_path)] = key.decode()
         encrypt_count += 1
     
     save_key(key_map)
-    write_logs(fail_logs)
 
-    return encrypt_count, fail_count
+    return encrypt_count, fail_count, fail_logs
 
 
-def decrypt(paths: list, key_path: str):
-    if not os.path.exists(key_path):
-        sys.exit("Key path does not exist")
-
-    with open(key_path, "r") as file:
-        key_map: dict = json.load(file)
+def decrypt(paths: list, key_path: Path):
+    
+    key_map: dict = json.loads(key_path.read_text())
 
     decrypt_count = 0
     fail_count = 0
     fail_logs = []
 
-    for path in paths:
-        output_path = path.rstrip(".enc")
+    for file_path in paths:
         
-        if path not in key_map:
-            fail_logs.append(f"No key found for {path}")
+        file_path = Path(file_path)
+        decrypted_path = file_path.with_suffix("")
+        
+        if str(file_path) not in key_map:
+            fail_logs.append(f"No key found for {file_path}")
             fail_count += 1
             continue
 
-        elif os.path.exists(output_path):
-            warning = input(f"WARNING: {output_path} already exists, do you want to overwrite? [y/N] ")
+        elif decrypted_path.exists():
+            warning = input(f"WARNING: {decrypted_path} already exists, do you want to overwrite? [y/N] ")
             if warning.lower().strip() not in ["y", "yes"]:
-                fail_logs.append(f"{output_path} already exists")
+                fail_logs.append(f"{decrypted_path.stem} skipped, file already exists")
                 fail_count += 1
                 continue
 
-        key: str = key_map[path]
+        key: str = key_map[str(file_path)]
         f = Fernet(key.encode())
 
         try:
-            with open(path, "rb") as encrypted_file:
-                encrypted_data = encrypted_file.read()
-            
+            encrypted_data = file_path.read_bytes()
             decrypted_data = f.decrypt(encrypted_data)
-
-            with open(output_path, "wb") as decrypted_file:
-                decrypted_file.write(decrypted_data)
-            os.remove(path)
+            decrypted_path.write_bytes(decrypted_data)
+            file_path.unlink()
             decrypt_count += 1
 
         except OSError:
-            fail_logs.append(f"{path} cannot be opened")
+            fail_logs.append(f"{file_path} cannot be opened")
+            fail_count += 1
+            continue
+        except InvalidToken:
+            fail_logs.append(f"{file_path} token does not match the given key")
             fail_count += 1
             continue
     
@@ -147,16 +163,16 @@ def decrypt(paths: list, key_path: str):
 
 
 def save_key(key_map, key_path="keys.json"):
-    if os.path.exists(key_path):
-        with open(key_path, "r") as file:
-            existing_keys = json.load(file)
+    key_path = Path(key_path)
+    if key_path.exists():
+        existing_keys = json.loads(key_path.read_text())
         
-        for filename in key_map:
-            if filename in existing_keys:
-                warning = input(f"WARNING: Key for {filename} already exists, are you sure you want to proceed? [y/N] ")
+        for file_path in key_map:
+            if file_path in existing_keys:
+                warning = input(f"WARNING: Key for {file_path} already exists, FILES WITHOUT KEYS CANNOT BE DECRYPTED, are you sure you want to proceed? [y/N] ")
                 if warning.lower().strip() not in ["y", "yes"]:
                     continue
-                existing_keys[filename] = key_map[filename]
+                existing_keys[file_path] = key_map[file_path]
         
         with open(key_path, "w") as file:
             json.dump(existing_keys, file, indent=4)
