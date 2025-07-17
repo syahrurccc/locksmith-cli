@@ -1,8 +1,15 @@
 import argparse
-from cryptography.fernet import Fernet, InvalidToken
-from pathlib import Path
+import base64
+import bcrypt
+import getpass
 import json
+import os
 import sys
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from datetime import datetime
+from pathlib import Path
 
 
 def main():
@@ -16,6 +23,7 @@ def main():
         
 
 def parse_arguments():
+
     parser = argparse.ArgumentParser(
         description="Encrypt or Decrypt file(s) or folder(s)")
 
@@ -35,22 +43,23 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def validate_args(paths, key_path=None, is_encrypt=True):
-    
-    if not is_encrypt:
-        if not key_path:
-            sys.exit("No keys provided")
-        elif not key_path.exists():
-            sys.exit("Key path does not exist")
+def validate_args(paths: str, key_path: Path=None, is_encrypt=True):
+    """Run a validation check on arguments"""
 
     valid_paths = set()
     invalid_paths = []
     invalid_logs = []
     mode = "encrypt" if is_encrypt else "decrypt"
-    
+
+    if not is_encrypt:
+        if not key_path or not key_path.exists():
+            sys.exit("No valid key provided")
+
     for path in paths:
         path = Path(path)
-        if not path.exists():
+        if path.is_absolute():
+            sys.exit("Root directory path is not allowed")
+        elif not path.exists():
             invalid_logs.append(f"{path} does not exists")
             invalid_paths.append(path)
         elif path.is_file():
@@ -60,7 +69,8 @@ def validate_args(paths, key_path=None, is_encrypt=True):
             else:
                 valid_paths.add(path)
         elif path.is_dir():
-            warning = input(f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] ")
+            warning = input(
+                f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] ")
             if warning.lower().strip() in ["y", "yes"]:
                 valid_paths.update([file for file in path.rglob("*") if file.is_file()])
             else:
@@ -77,37 +87,61 @@ def validate_args(paths, key_path=None, is_encrypt=True):
 
 
 def encrypt(paths: list):
+    """encrypt files then return reports"""
+
     key_map = {}
     encrypt_count = 0
     fail_count = 0
     fail_logs = []
 
+    while True:
+        password: str = (getpass.getpass("Password (minimum of 8 characters): ")).strip()
+
+        if not password:
+            print("Please enter a password")
+        elif not 8 < len(password) < 32:
+            print("Please enter 8 to 32 characters")
+        elif not password.isascii():
+            print("Password can only contains alphabet, digits, or punctuation")
+
+        break
+        
+    salt: bytes = os.urandom(16)
+    fernet: Fernet = get_fernet(password, salt)
+    
+
+    pw_hash: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    key_map["pw_hash"] = pw_hash.decode()
+    key_map["salt_b64"] = base64.b64encode(salt).decode()
+    key_map["encrypted_files"] = []
+
     for file_path in paths:
         file_path = Path(file_path)
 
-        key = Fernet.generate_key()
-        f = Fernet(key)
-
         encrypted_path = Path(f"{file_path}.enc")
-        if encrypted_path.exists():
-            warning = input(f"WARNING: {encrypted_path} file already exists, do you want to overwrite it? [y/N] ")
-            if warning.lower().strip() not in ["y", "yes"]:
-                fail_logs.append(f"{encrypted_path} already exists")
-                fail_count += 1
-                continue
-
+        if encrypted_path.exists() and not prompt_user(encrypted_path):
+            fail_logs.append(f"{encrypted_path} already exists")
+            fail_count += 1
+            continue
         try:
-            original_data = file_path.read_bytes()
-            encrypted_data = f.encrypt(original_data)
+            original_data: bytes = file_path.read_bytes()
+            encrypted_data: bytes = fernet.encrypt(original_data)
         except OSError:
             fail_logs.append(f"{file_path} cannot be opened")
             fail_count += 1
             continue
 
+        file_list = {
+            "original_path": str(file_path),
+            "encrypted_path": str(encrypted_path),
+            "encrypted_date": datetime.now().isoformat(),
+            "file_size": os.path.getsize(str(file_path))
+        }
+
+        key_map["encrypted_files"].append(file_list)
+
         encrypted_path.write_bytes(encrypted_data)
         file_path.unlink()
-
-        key_map[str(encrypted_path)] = key.decode()
         encrypt_count += 1
     
     save_key(key_map)
@@ -118,6 +152,24 @@ def encrypt(paths: list):
 def decrypt(paths: list, key_path: Path):
     
     key_map: dict = json.loads(key_path.read_text())
+    pw_hash: str = key_map["pw_hash"]
+    salt_b64: str = key_map["salt_b64"]
+
+    show = input("Do you wish to see list of files that can be decrypted? [y/N] ")
+    if show.lower().strip() in ["y", "yes"]:
+        print("Encrypted files:")
+        for i, file_list in enumerate(key_map["encrypted_files"]):
+            print(f"{i+1}. {file_list["original_path"]}")
+
+    while True:
+        password: str = getpass.getpass("Password: ")
+        if not bcrypt.checkpw(password.encode(), pw_hash.encode()):
+            print("Incorrect password")
+            continue
+        break
+    
+    kdf_salt: bytes = base64.b64decode(salt_b64)
+    fernet: Fernet = get_fernet(password, kdf_salt)
 
     decrypt_count = 0
     fail_count = 0
@@ -127,25 +179,14 @@ def decrypt(paths: list, key_path: Path):
         
         file_path = Path(file_path)
         decrypted_path = file_path.with_suffix("")
-        
-        if str(file_path) not in key_map:
-            fail_logs.append(f"No key found for {file_path}")
+
+        if decrypted_path.exists() and not prompt_user(decrypted_path):
+            fail_logs.append(f"{decrypted_path.stem} skipped, file already exists")
             fail_count += 1
             continue
-
-        elif decrypted_path.exists():
-            warning = input(f"WARNING: {decrypted_path} already exists, do you want to overwrite? [y/N] ")
-            if warning.lower().strip() not in ["y", "yes"]:
-                fail_logs.append(f"{decrypted_path.stem} skipped, file already exists")
-                fail_count += 1
-                continue
-
-        key: str = key_map[str(file_path)]
-        f = Fernet(key.encode())
-
         try:
             encrypted_data = file_path.read_bytes()
-            decrypted_data = f.decrypt(encrypted_data)
+            decrypted_data = fernet.decrypt(encrypted_data)
             decrypted_path.write_bytes(decrypted_data)
             file_path.unlink()
             decrypt_count += 1
@@ -162,27 +203,54 @@ def decrypt(paths: list, key_path: Path):
     return decrypt_count, fail_count, fail_logs
 
 
-def save_key(key_map, key_path="keys.json"):
-    key_path = Path(key_path)
-    if key_path.exists():
-        existing_keys = json.loads(key_path.read_text())
-        
-        for file_path in key_map:
-            if file_path in existing_keys:
-                warning = input(f"WARNING: Key for {file_path} already exists, FILES WITHOUT KEYS CANNOT BE DECRYPTED, are you sure you want to proceed? [y/N] ")
-                if warning.lower().strip() not in ["y", "yes"]:
-                    continue
-                existing_keys[file_path] = key_map[file_path]
-        
-        with open(key_path, "w") as file:
-            json.dump(existing_keys, file, indent=4)
+def save_key(key_map):
+    """Save hashed password and salt"""
 
-    else:
-        with open(key_path, "w") as file:
-            json.dump(key_map, file, indent=4)
+    while True:
+        key_path = (input("Enter a name for the key file (must end in .json) ")).strip()
+        if not key_path:
+            print("Must provide a file name")
+            continue
+        elif not key_path.endswith(".json"):
+            print("Key file format must be .json")
+            continue
+        
+        key_path = Path(key_path)
+        
+        if key_path.exists():
+            print(f"{str(key_path)} already exists. Please choose another name or delete the existing file")
+            continue
+        break
+
+    with open(key_path, "w") as file:
+        json.dump(key_map, file, indent=4)
+
+
+def get_fernet(password: str, salt) -> Fernet:
+    """Generate fernet object"""
+
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=1_200_000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    return Fernet(key)
+
+
+def prompt_user(path):
+    """Prompt user for confirmation"""
+
+    warning = input(f"WARNING: {path} already exists, do you want to overwrite? [y/N] ")
+    if warning.lower().strip() not in ["y", "yes"]:
+        return False
+    return True
 
 
 def write_logs(fail_logs):
+    """Write logs if there any failure"""
+
     with open("logs.txt", "w") as logs:
         for log in fail_logs:
             logs.write(log + "\n")
