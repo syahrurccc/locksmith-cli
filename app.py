@@ -20,30 +20,34 @@ def main():
 
     elif args.decrypt:
         print(validate_args(args.paths, args.key, is_encrypt=False))
-        
+
 
 def parse_arguments():
 
     parser = argparse.ArgumentParser(
-        description="Encrypt or Decrypt file(s) or folder(s)")
+        description="Encrypt or Decrypt file(s) or folder(s)"
+    )
 
     group = parser.add_mutually_exclusive_group(required=True)
 
-    group.add_argument("-e", "--encrypt", 
-                    help="Encrypt file(s)/folder(s)", 
-                    action="store_true")
-    group.add_argument("-d", "--decrypt", 
-                    help="Decrypt file(s)/folder(s)", 
-                    action="store_true")
-    parser.add_argument("-k", "--key",
-                        type=Path,
-                        help="JSON file path containing key to decrypt")
-    parser.add_argument("paths", nargs="+", 
-                        help="The name of file(s)/folder(s) you want to encrypt/decrypt")
+    group.add_argument(
+        "-e", "--encrypt", help="Encrypt file(s)/folder(s)", action="store_true"
+    )
+    group.add_argument(
+        "-d", "--decrypt", help="Decrypt file(s)/folder(s)", action="store_true"
+    )
+    parser.add_argument(
+        "-k", "--key", type=Path, help="JSON file path containing key to decrypt"
+    )
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        help="The name of file(s)/folder(s) you want to encrypt/decrypt",
+    )
     return parser.parse_args()
 
 
-def validate_args(paths: str, key_path: Path=None, is_encrypt=True):
+def validate_args(paths: str, key_path: Path = None, is_encrypt=True):
     """Run a validation check on arguments"""
 
     valid_paths = set()
@@ -70,15 +74,20 @@ def validate_args(paths: str, key_path: Path=None, is_encrypt=True):
                 valid_paths.add(path)
         elif path.is_dir():
             warning = input(
-                f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] ")
+                f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] "
+            )
             if warning.lower().strip() in ["y", "yes"]:
                 valid_paths.update([file for file in path.rglob("*") if file.is_file()])
             else:
                 valid_paths.update([file for file in path.iterdir() if file.is_file()])
 
-    n, fail, fail_logs = encrypt(list(valid_paths)) if is_encrypt else decrypt(list(valid_paths), key_path)
+    n, fail, fail_logs = (
+        encrypt(list(valid_paths))
+        if is_encrypt
+        else decrypt(list(valid_paths), key_path)
+    )
     status = "encrypted" if is_encrypt else "decrypted"
-    
+
     if fail > 0 or len(invalid_paths) > 0:
         write_logs(fail_logs + invalid_logs)
         return f"{status.capitalize()}: {n} file(s), failed: {fail} file(s), invalid: {len(invalid_paths)} file(s), see logs.txt for details"
@@ -95,7 +104,9 @@ def encrypt(paths: list):
     fail_logs = []
 
     while True:
-        password: str = (getpass.getpass("Password (minimum of 8 characters): ")).strip()
+        password: str = (
+            getpass.getpass("Password (minimum of 8 characters): ")
+        ).strip()
 
         if not password:
             print("Please enter a password")
@@ -105,10 +116,9 @@ def encrypt(paths: list):
             print("Password can only contains alphabet, digits, or punctuation")
 
         break
-        
+
     salt: bytes = os.urandom(16)
     fernet: Fernet = get_fernet(password, salt)
-    
 
     pw_hash: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
     key_map["pw_hash"] = pw_hash.decode()
@@ -135,7 +145,7 @@ def encrypt(paths: list):
             "original_path": str(file_path),
             "encrypted_path": str(encrypted_path),
             "encrypted_date": datetime.now().isoformat(),
-            "file_size": os.path.getsize(str(file_path))
+            "file_size": os.path.getsize(str(file_path)),
         }
 
         key_map["encrypted_files"].append(file_list)
@@ -143,14 +153,14 @@ def encrypt(paths: list):
         encrypted_path.write_bytes(encrypted_data)
         file_path.unlink()
         encrypt_count += 1
-    
+
     save_key(key_map)
 
     return encrypt_count, fail_count, fail_logs
 
 
 def decrypt(paths: list, key_path: Path):
-    
+
     key_map: dict = json.loads(key_path.read_text())
     pw_hash: str = key_map["pw_hash"]
     salt_b64: str = key_map["salt_b64"]
@@ -167,7 +177,7 @@ def decrypt(paths: list, key_path: Path):
             print("Incorrect password")
             continue
         break
-    
+
     kdf_salt: bytes = base64.b64decode(salt_b64)
     fernet: Fernet = get_fernet(password, kdf_salt)
 
@@ -176,7 +186,7 @@ def decrypt(paths: list, key_path: Path):
     fail_logs = []
 
     for file_path in paths:
-        
+
         file_path = Path(file_path)
         decrypted_path = file_path.with_suffix("")
 
@@ -199,7 +209,7 @@ def decrypt(paths: list, key_path: Path):
             fail_logs.append(f"{file_path} token does not match the given key")
             fail_count += 1
             continue
-    
+
     return decrypt_count, fail_count, fail_logs
 
 
@@ -214,11 +224,13 @@ def save_key(key_map):
         elif not key_path.endswith(".json"):
             print("Key file format must be .json")
             continue
-        
+
         key_path = Path(key_path)
-        
+
         if key_path.exists():
-            print(f"{str(key_path)} already exists. Please choose another name or delete the existing file")
+            print(
+                f"{str(key_path)} already exists. Please choose another name or delete the existing file"
+            )
             continue
         break
 
@@ -256,5 +268,5 @@ def write_logs(fail_logs):
             logs.write(log + "\n")
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
