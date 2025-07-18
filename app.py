@@ -51,8 +51,8 @@ def validate_args(paths: str, key_path: Path = None, is_encrypt=True):
     """Run a validation check on arguments"""
 
     valid_paths = set()
-    invalid_paths = []
-    invalid_logs = []
+    invalid_count = 0
+    
     mode = "encrypt" if is_encrypt else "decrypt"
 
     if not is_encrypt:
@@ -64,12 +64,12 @@ def validate_args(paths: str, key_path: Path = None, is_encrypt=True):
         if path.is_absolute():
             sys.exit("Root directory path is not allowed")
         elif not path.exists():
-            invalid_logs.append(f"{path} does not exists")
-            invalid_paths.append(path)
+            write_logs(f"{path} does not exists")
+            invalid_count += 1
         elif path.is_file():
             if path.suffix != ".enc" and not is_encrypt:
-                invalid_logs.append(f"{path} cannot be decrypted")
-                invalid_paths.append(path)
+                write_logs(f"{path} cannot be decrypted")
+                invalid_count += 1
             else:
                 valid_paths.add(path)
         elif path.is_dir():
@@ -81,27 +81,24 @@ def validate_args(paths: str, key_path: Path = None, is_encrypt=True):
             else:
                 valid_paths.update([file for file in path.iterdir() if file.is_file()])
 
-    n, fail, fail_logs = (
+    n, fail = (
         encrypt(list(valid_paths))
         if is_encrypt
         else decrypt(list(valid_paths), key_path)
     )
     status = "encrypted" if is_encrypt else "decrypted"
 
-    if fail > 0 or len(invalid_paths) > 0:
-        write_logs(fail_logs + invalid_logs)
-        return f"{status.capitalize()}: {n} file(s), failed: {fail} file(s), invalid: {len(invalid_paths)} file(s), see logs.txt for details"
+    if fail > 0 or invalid_count > 0:
+        return f"{status.capitalize()}: {n} file(s), failed: {fail} file(s), invalid: {invalid_count} file(s), see logs.txt for details"
     else:
         return f"Successfully {status} {n} file(s)"
 
 
-def encrypt(paths: list):
+def encrypt(paths: list) -> int:
     """encrypt files then return reports"""
 
-    key_map = {}
     encrypt_count = 0
     fail_count = 0
-    fail_logs = []
 
     while True:
         password: str = (
@@ -110,41 +107,43 @@ def encrypt(paths: list):
 
         if not password:
             print("Please enter a password")
-        elif not 8 < len(password) < 32:
+        elif not 8 <= len(password) <= 32:
             print("Please enter 8 to 32 characters")
         elif not password.isascii():
             print("Password can only contains alphabet, digits, or punctuation")
-
-        break
+        else:
+            break
 
     salt: bytes = os.urandom(16)
     fernet: Fernet = get_fernet(password, salt)
 
     pw_hash: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    key_map["pw_hash"] = pw_hash.decode()
-    key_map["salt_b64"] = base64.b64encode(salt).decode()
-    key_map["encrypted_files"] = []
+    key_map = {
+        "pw_hash": pw_hash.decode(),
+        "salt_b64": base64.b64encode(salt).decode(),
+        "encrypted_files": []
+    }
 
     for file_path in paths:
         file_path = Path(file_path)
 
         encrypted_path = Path(f"{file_path}.enc")
         if encrypted_path.exists() and not prompt_user(encrypted_path):
-            fail_logs.append(f"{encrypted_path} already exists")
+            write_logs(f"{encrypted_path} already exists")
             fail_count += 1
             continue
         try:
             original_data: bytes = file_path.read_bytes()
             encrypted_data: bytes = fernet.encrypt(original_data)
         except OSError:
-            fail_logs.append(f"{file_path} cannot be opened")
+            write_logs(f"{file_path} cannot be opened")
             fail_count += 1
             continue
 
         file_list = {
             "original_path": str(file_path),
             "encrypted_path": str(encrypted_path),
-            "encrypted_date": datetime.now().isoformat(),
+            "encrypted_date": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
             "file_size": os.path.getsize(str(file_path)),
         }
 
@@ -156,10 +155,13 @@ def encrypt(paths: list):
 
     save_key(key_map)
 
-    return encrypt_count, fail_count, fail_logs
+    return encrypt_count, fail_count
 
 
-def decrypt(paths: list, key_path: Path):
+def decrypt(paths: list, key_path: Path) -> int:
+
+    decrypt_count = 0
+    fail_count = 0
 
     key_map: dict = json.loads(key_path.read_text())
     pw_hash: str = key_map["pw_hash"]
@@ -181,39 +183,34 @@ def decrypt(paths: list, key_path: Path):
     kdf_salt: bytes = base64.b64decode(salt_b64)
     fernet: Fernet = get_fernet(password, kdf_salt)
 
-    decrypt_count = 0
-    fail_count = 0
-    fail_logs = []
-
     for file_path in paths:
 
         file_path = Path(file_path)
-        decrypted_path = file_path.with_suffix("")
+        decrypted_path: Path = file_path.with_suffix("")
 
         if decrypted_path.exists() and not prompt_user(decrypted_path):
-            fail_logs.append(f"{decrypted_path.stem} skipped, file already exists")
+            write_logs(f"{decrypted_path} skipped, file already exists")
             fail_count += 1
             continue
         try:
-            encrypted_data = file_path.read_bytes()
-            decrypted_data = fernet.decrypt(encrypted_data)
+            encrypted_data: bytes = file_path.read_bytes()
+            decrypted_data: bytes = fernet.decrypt(encrypted_data)
             decrypted_path.write_bytes(decrypted_data)
             file_path.unlink()
             decrypt_count += 1
-
         except OSError:
-            fail_logs.append(f"{file_path} cannot be opened")
+            write_logs(f"{file_path} cannot be opened")
             fail_count += 1
             continue
         except InvalidToken:
-            fail_logs.append(f"{file_path} token does not match the given key")
+            write_logs(f"{file_path} token does not match the given key")
             fail_count += 1
             continue
 
-    return decrypt_count, fail_count, fail_logs
+    return decrypt_count, fail_count
 
 
-def save_key(key_map):
+def save_key(key_map: dict):
     """Save hashed password and salt"""
 
     while True:
@@ -251,8 +248,8 @@ def get_fernet(password: str, salt) -> Fernet:
     return Fernet(key)
 
 
-def prompt_user(path):
-    """Prompt user for confirmation"""
+def prompt_user(path: Path) -> bool:
+    """Prompt user for confirmation if file already exists"""
 
     warning = input(f"WARNING: {path} already exists, do you want to overwrite? [y/N] ")
     if warning.lower().strip() not in ["y", "yes"]:
@@ -260,13 +257,16 @@ def prompt_user(path):
     return True
 
 
-def write_logs(fail_logs):
+def write_logs(logs: str):
     """Write logs if there any failure"""
 
-    with open("logs.txt", "w") as logs:
-        for log in fail_logs:
-            logs.write(log + "\n")
-
+    output_logs = []
+    output_logs.append(logs)
+    
+    if output_logs:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        p = Path(f"logs_{timestamp}.txt")
+        p.write_text("\n".join(output_logs) + "\n")
 
 if __name__ == "__main__":
     main()
