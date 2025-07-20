@@ -3,6 +3,7 @@ import base64
 import bcrypt
 import getpass
 import json
+import logging
 import os
 import sys
 from cryptography.fernet import Fernet, InvalidToken
@@ -14,6 +15,7 @@ from typing import Tuple, Optional
 
 
 def main():
+    setup_logging()
     args = parse_arguments()
     deleted_paths = []
 
@@ -40,9 +42,9 @@ def main():
                 key_map["encrypted_files"].append(file_info)
             except OSError as e:
                 print(f"Failed to encrypt {path}")
-                write_logs(f"{path} Error: {e}")
+                logging.error(f"{path} Error: {e}")
                 fail_count += 1
-        
+
         save_key(key_map)
 
     elif args.decrypt:
@@ -67,9 +69,9 @@ def main():
                 deleted_paths.append(path)
             except (OSError, InvalidToken) as e:
                 print(f"Failed to decrypt {path}")
-                write_logs(f"{path} Error: {e}")
+                logging.error(f"{path} Error: {e}")
                 fail_count += 1
-            
+
     delete_paths(deleted_paths)
     print(report(len(deleted_paths), fail_count, key_path))
 
@@ -104,7 +106,9 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def validate_args(paths: list, key_path: Optional[Path] = None) -> Tuple[set, Optional[Path], int]:
+def validate_args(
+    paths: list, key_path: Optional[Path] = None
+) -> Tuple[set, Optional[Path], int]:
     """Run a validation check on arguments"""
 
     valid_paths = set()
@@ -120,11 +124,11 @@ def validate_args(paths: list, key_path: Optional[Path] = None) -> Tuple[set, Op
         if path.is_absolute():
             raise PermissionError("Root directory path is not allowed")
         elif not path.exists():
-            write_logs(f"{path} does not exists")
+            logging.error(f"{path} does not exists")
             fail_count += 1
         elif path.is_file():
-            if path.suffix != ".enc" and not key_path:
-                write_logs(f"{path} cannot be decrypted")
+            if path.suffix != ".enc" and key_path:
+                logging.error(f"{path} cannot be decrypted")
                 fail_count += 1
             else:
                 valid_paths.add(path)
@@ -136,6 +140,9 @@ def validate_args(paths: list, key_path: Optional[Path] = None) -> Tuple[set, Op
                 valid_paths.update([file for file in path.rglob("*") if file.is_file()])
             else:
                 valid_paths.update([file for file in path.iterdir() if file.is_file()])
+
+    if not valid_paths:
+        sys.exit(f"No files to {mode}")
 
     return valid_paths, key_path, fail_count
 
@@ -158,10 +165,12 @@ def read_file(path: str) -> bytes:
     return Path(path).read_bytes()
 
 
-def write_file(data: bytes, path: Path, is_encrypt=False):
+def write_file(data: bytes, path: Path, is_encrypt: bool = False) -> None:
     """Write file to computer's storage"""
 
-    output_path: Path = Path(f"{path}.enc") if is_encrypt else Path(path).with_suffix("")
+    output_path: Path = (
+        Path(f"{path}.enc") if is_encrypt else Path(path).with_suffix("")
+    )
 
     if output_path.exists() and not confirmation(output_path):
         raise OSError(f"{output_path} already exists")
@@ -226,14 +235,12 @@ def key_mapping(password: str, salt: bytes) -> dict:
 def create_file_info(path: Path) -> dict:
     """Generate file info"""
 
-    file_info = {
+    return {
         "original_path": str(path),
         "encrypted_path": f"{path}.enc",
         "encrypted_date": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
         "file_size": os.path.getsize(path),
     }
-
-    return file_info
 
 
 def load_key(key_path: Path) -> Tuple[str, bytes, dict]:
@@ -247,11 +254,13 @@ def load_key(key_path: Path) -> Tuple[str, bytes, dict]:
     return password, kdf_salt, key_map
 
 
-def save_key(key_map: dict):
+def save_key(key_map: dict) -> None:
     """Save hashed password and salt"""
 
     while True:
-        key_path_str = (input("Enter a name for the key file (must end in .json) ")).strip()
+        key_path_str = (
+            input("Enter a name for the key file (must end in .json) ")
+        ).strip()
         if not key_path_str:
             print("Must provide a file name")
             continue
@@ -272,7 +281,9 @@ def save_key(key_map: dict):
         json.dump(key_map, file, indent=4)
 
 
-def get_fernet(password: str, salt: Optional[bytes]=None, is_encrypt=False) -> Tuple[Fernet, Optional[bytes]]:
+def get_fernet(
+    password: str, salt: Optional[bytes] = None, is_encrypt=False
+) -> Tuple[Fernet, Optional[bytes]]:
     """Generate fernet object"""
 
     if is_encrypt:
@@ -297,20 +308,18 @@ def confirmation(path: Path) -> bool:
         return False
     return True
 
-# THIS NEEDS TO BE FIXED
-def write_logs(logs: str):
-    """Write logs if there are any failure"""
 
-    output_logs = []
-    output_logs.append(logs)
+def setup_logging() -> None:
+    """Setup log file"""
 
-    if output_logs:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        p = Path(f"logs_{timestamp}.txt")
-        p.write_text("\n".join(output_logs) + "\n")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    logging.basicConfig(level=logging.ERROR, filename=f"logs_{timestamp}.log")
 
 
-def report(successes: int, fails: int, key_path: Optional[Path]=None) -> str:
+def report(successes: int, fails: int, key_path: Optional[Path] = None) -> str:
+    """Print the report of the run"""
+
     status = "encrypted" if not key_path else "decrypted"
 
     if fails > 0:
@@ -319,25 +328,25 @@ def report(successes: int, fails: int, key_path: Optional[Path]=None) -> str:
         return f"Successfully {status} {successes} file(s)"
 
 
-def delete_paths(paths: list):
+def delete_paths(paths: list) -> None:
     """Delete successfully processed files"""
 
     for path in paths:
         try:
             Path(path).unlink()
         except OSError as e:
-            write_logs(f"Unexpected OS error: {e}")
+            logging.error(f"Unexpected OS error: {e}")
             continue
 
 
-def show_file_list(key_map: dict):
+def show_file_list(key_map: dict) -> None:
     """Show file lists that are available to decrypt in the key file"""
 
     show = input("Do you wish to see list of files that can be decrypted? [y/N] ")
     if show.lower().strip() in ["y", "yes"]:
         print("Encrypted files:")
         for i, file_list in enumerate(key_map["encrypted_files"]):
-            print(f"{i+1}. {file_list["original_path"]}")
+            print(f"{i+1}. {file_list['original_path']}")
 
 
 if __name__ == "__main__":
