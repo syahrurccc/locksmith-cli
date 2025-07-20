@@ -27,29 +27,29 @@ def main():
 
     if args.encrypt:
         password: str = get_encrypt_password()
-        fernet, salt = get_fernet(password, is_encrypt=True)
-        key_map: dict = key_mapping(password, salt)
+        fernet, salt = CryptoTools.get_fernet(password, is_encrypt=True)
+        key_map: dict = KeyManager.key_mapping(password, salt)
 
         for i, path in enumerate(paths, start=1):
             print(f"Encrypting {path} ({i}/{len(paths)})")
 
             try:
-                input_data: bytes = read_file(path)
-                processed_data: bytes = encrypt(input_data, fernet)
-                write_file(processed_data, path, is_encrypt=True)
+                input_data: bytes = FileHandler.read_file(path)
+                processed_data: bytes = CryptoTools.encrypt(input_data, fernet)
+                FileHandler.write_file(processed_data, path, is_encrypt=True)
                 deleted_paths.append(path)
-                file_info = create_file_info(path)
+                file_info = KeyManager.create_file_info(path)
                 key_map["encrypted_files"].append(file_info)
             except OSError as e:
                 print(f"Failed to encrypt {path}")
                 logging.error(f"{path} Error: {e}")
                 fail_count += 1
 
-        save_key(key_map)
+        KeyManager.save_key(key_map)
 
     elif args.decrypt:
         try:
-            pw_hash, kdf_salt, key_map = load_key(key_path)
+            pw_hash, kdf_salt, key_map = KeyManager.load_key(key_path)
         except Exception as e:
             sys.exit(
                 f"{e}: Failed to extract password and/or salt, check your .json file"
@@ -57,23 +57,157 @@ def main():
 
         show_file_list(key_map)
         password = get_decrypt_password(pw_hash)
-        fernet, _ = get_fernet(password, kdf_salt, is_encrypt=False)
+        fernet, _ = CryptoTools.get_fernet(password, kdf_salt, is_encrypt=False)
 
         for i, path in enumerate(paths, start=1):
             print(f"Decrypting {path} ({i}/{len(paths)})")
 
             try:
-                input_data = read_file(path)
-                processed_data = decrypt(input_data, fernet)
-                write_file(processed_data, path, is_encrypt=False)
+                input_data = FileHandler.read_file(path)
+                processed_data = CryptoTools.decrypt(input_data, fernet)
+                FileHandler.write_file(processed_data, path, is_encrypt=False)
                 deleted_paths.append(path)
             except (OSError, InvalidToken) as e:
                 print(f"Failed to decrypt {path}")
                 logging.error(f"{path} Error: {e}")
                 fail_count += 1
 
-    delete_paths(deleted_paths)
+    FileHandler.delete_paths(deleted_paths)
     print(report(len(deleted_paths), fail_count, key_path))
+
+
+class CryptoTools:
+
+    @staticmethod
+    def encrypt(input_data: bytes, fernet: Fernet) -> bytes:
+        """Encrypt data then return encrypted data as bytes"""
+
+        return fernet.encrypt(input_data)
+
+    @staticmethod
+    def decrypt(input_data: bytes, fernet: Fernet) -> bytes:
+        """Decrypt data then return decrypted data as bytes"""
+
+        return fernet.decrypt(input_data)
+
+    @staticmethod
+    def get_fernet(
+        password: str, salt: Optional[bytes] = None, is_encrypt=False
+    ) -> Tuple[Fernet, Optional[bytes]]:
+        """Generate fernet object"""
+
+        if is_encrypt:
+            salt = os.urandom(16)
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=1_200_000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+
+        return Fernet(key), salt
+
+
+class KeyManager:
+
+    @staticmethod
+    def load_key(key_path: Path) -> Tuple[str, bytes, dict]:
+        """Load password hash and salt hash from json file"""
+
+        key_map: dict = json.loads(key_path.read_text())
+
+        password: str = key_map["pw_hash"]
+        kdf_salt: bytes = base64.b64decode(key_map["salt_b64"])
+
+        return password, kdf_salt, key_map
+
+    @staticmethod
+    def save_key(key_map: dict) -> None:
+        """Save hashed password and salt"""
+
+        while True:
+            key_path_str = (
+                input("Enter a name for the key file (must end in .json) ")
+            ).strip()
+            if not key_path_str:
+                print("Must provide a file name")
+                continue
+            elif not key_path_str.endswith(".json"):
+                print("Key file format must be .json")
+                continue
+
+            key_path: Path = Path(key_path_str)
+
+            if key_path.exists():
+                print(
+                    f"{key_path} already exists. Please choose another name or delete the existing file"
+                )
+                continue
+            break
+
+        with open(key_path, "w") as file:
+            json.dump(key_map, file, indent=4)
+
+    @staticmethod
+    def key_mapping(password: str, salt: bytes) -> dict:
+        """Generate key map"""
+
+        pw_hash: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+        kdf_salt: bytes = base64.b64encode(salt)
+
+        key_map = {
+            "pw_hash": pw_hash.decode(),
+            "salt_b64": kdf_salt.decode(),
+            "encrypted_files": [],
+        }
+
+        return key_map
+
+    @staticmethod
+    def create_file_info(path: Path) -> dict:
+        """Generate file info"""
+
+        return {
+            "original_path": str(path),
+            "encrypted_path": f"{path}.enc",
+            "encrypted_date": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+            "file_size": os.path.getsize(path),
+        }
+
+
+class FileHandler:
+
+    @staticmethod
+    def read_file(path: str) -> bytes:
+        """Read given file then store it as bytes"""
+
+        return Path(path).read_bytes()
+
+    @staticmethod
+    def write_file(data: bytes, path: Path, is_encrypt: bool = False) -> None:
+        """Write file to computer's storage"""
+
+        output_path: Path = (
+            Path(f"{path}.enc") if is_encrypt else Path(path).with_suffix("")
+        )
+
+        if output_path.exists() and not confirmation(output_path):
+            raise OSError(f"{output_path} already exists")
+
+        output_path.write_bytes(data)
+
+    @staticmethod
+    def delete_paths(paths: list) -> None:
+        """Delete successfully processed files"""
+
+        for path in paths:
+            try:
+                Path(path).unlink()
+            except OSError as e:
+                logging.error(f"Unexpected OS error: {e}")
+                continue
 
 
 def parse_arguments():
@@ -147,37 +281,6 @@ def validate_args(
     return valid_paths, key_path, fail_count
 
 
-def encrypt(input_data: bytes, fernet: Fernet) -> bytes:
-    """Encrypt data then return encrypted data as bytes"""
-
-    return fernet.encrypt(input_data)
-
-
-def decrypt(input_data: bytes, fernet: Fernet) -> bytes:
-    """Decrypt data then return decrypted data as bytes"""
-
-    return fernet.decrypt(input_data)
-
-
-def read_file(path: str) -> bytes:
-    """Read given file then store it as bytes"""
-
-    return Path(path).read_bytes()
-
-
-def write_file(data: bytes, path: Path, is_encrypt: bool = False) -> None:
-    """Write file to computer's storage"""
-
-    output_path: Path = (
-        Path(f"{path}.enc") if is_encrypt else Path(path).with_suffix("")
-    )
-
-    if output_path.exists() and not confirmation(output_path):
-        raise OSError(f"{output_path} already exists")
-
-    output_path.write_bytes(data)
-
-
 def get_encrypt_password() -> str:
     """Get encryption password from user"""
 
@@ -217,89 +320,6 @@ def get_decrypt_password(pw_hash: str) -> str:
         return password
 
 
-def key_mapping(password: str, salt: bytes) -> dict:
-    """Generate key map"""
-
-    pw_hash: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    kdf_salt: bytes = base64.b64encode(salt)
-
-    key_map = {
-        "pw_hash": pw_hash.decode(),
-        "salt_b64": kdf_salt.decode(),
-        "encrypted_files": [],
-    }
-
-    return key_map
-
-
-def create_file_info(path: Path) -> dict:
-    """Generate file info"""
-
-    return {
-        "original_path": str(path),
-        "encrypted_path": f"{path}.enc",
-        "encrypted_date": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
-        "file_size": os.path.getsize(path),
-    }
-
-
-def load_key(key_path: Path) -> Tuple[str, bytes, dict]:
-    """Load password hash and salt hash from json file"""
-
-    key_map: dict = json.loads(key_path.read_text())
-
-    password: str = key_map["pw_hash"]
-    kdf_salt: bytes = base64.b64decode(key_map["salt_b64"])
-
-    return password, kdf_salt, key_map
-
-
-def save_key(key_map: dict) -> None:
-    """Save hashed password and salt"""
-
-    while True:
-        key_path_str = (
-            input("Enter a name for the key file (must end in .json) ")
-        ).strip()
-        if not key_path_str:
-            print("Must provide a file name")
-            continue
-        elif not key_path_str.endswith(".json"):
-            print("Key file format must be .json")
-            continue
-
-        key_path: Path = Path(key_path_str)
-
-        if key_path.exists():
-            print(
-                f"{key_path} already exists. Please choose another name or delete the existing file"
-            )
-            continue
-        break
-
-    with open(key_path, "w") as file:
-        json.dump(key_map, file, indent=4)
-
-
-def get_fernet(
-    password: str, salt: Optional[bytes] = None, is_encrypt=False
-) -> Tuple[Fernet, Optional[bytes]]:
-    """Generate fernet object"""
-
-    if is_encrypt:
-        salt = os.urandom(16)
-
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=1_200_000,
-    )
-    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-
-    return Fernet(key), salt
-
-
 def confirmation(path: Path) -> bool:
     """Prompt user for confirmation if file already exists"""
 
@@ -326,17 +346,6 @@ def report(successes: int, fails: int, key_path: Optional[Path] = None) -> str:
         return f"{status.capitalize()}: {successes} file(s), failed: {fails} file(s), see logs.txt for details"
     else:
         return f"Successfully {status} {successes} file(s)"
-
-
-def delete_paths(paths: list) -> None:
-    """Delete successfully processed files"""
-
-    for path in paths:
-        try:
-            Path(path).unlink()
-        except OSError as e:
-            logging.error(f"Unexpected OS error: {e}")
-            continue
 
 
 def show_file_list(key_map: dict) -> None:
