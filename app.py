@@ -15,7 +15,6 @@ from typing import Tuple, Optional
 
 
 def main():
-    setup_logging()
     args = parse_arguments()
     deleted_paths = []
 
@@ -26,7 +25,7 @@ def main():
         sys.exit(1)
 
     if args.encrypt:
-        password: str = get_encrypt_password()
+        password: str = UserPrompts.get_encrypt_password()
         fernet, salt = CryptoTools.get_fernet(password, is_encrypt=True)
         key_map: dict = KeyManager.key_mapping(password, salt)
 
@@ -42,21 +41,20 @@ def main():
                 key_map["encrypted_files"].append(file_info)
             except OSError as e:
                 print(f"Failed to encrypt {path}")
-                logging.error(f"{path} Error: {e}")
+                Report.log_error(f"{path} Error: {e}")
                 fail_count += 1
 
         KeyManager.save_key(key_map)
 
     elif args.decrypt:
         try:
-            pw_hash, kdf_salt, key_map = KeyManager.load_key(key_path)
+            pw_hash, kdf_salt = KeyManager.load_key(key_path)
         except Exception as e:
             sys.exit(
                 f"{e}: Failed to extract password and/or salt, check your .json file"
             )
 
-        show_file_list(key_map)
-        password = get_decrypt_password(pw_hash)
+        password = UserPrompts.get_decrypt_password(pw_hash)
         fernet, _ = CryptoTools.get_fernet(password, kdf_salt, is_encrypt=False)
 
         for i, path in enumerate(paths, start=1):
@@ -69,11 +67,82 @@ def main():
                 deleted_paths.append(path)
             except (OSError, InvalidToken) as e:
                 print(f"Failed to decrypt {path}")
-                logging.error(f"{path} Error: {e}")
+                Report.log_error(f"{path} Error: {e}")
                 fail_count += 1
 
     FileHandler.delete_paths(deleted_paths)
-    print(report(len(deleted_paths), fail_count, key_path))
+    print(Report.result(len(deleted_paths), fail_count, key_path))
+
+
+def parse_arguments():
+    """Parsing arguments given"""
+
+    parser = argparse.ArgumentParser(
+        description="Encrypt or Decrypt file(s) or folder(s)"
+    )
+
+    group = parser.add_mutually_exclusive_group(required=True)
+
+    group.add_argument(
+        "-e", "--encrypt", help="Encrypt file(s)/folder(s)", action="store_true"
+    )
+    group.add_argument(
+        "-d", "--decrypt", help="Decrypt file(s)/folder(s)", action="store_true"
+    )
+    parser.add_argument(
+        "-k",
+        "--key",
+        type=Path,
+        default=None,
+        help="JSON file path containing key to decrypt",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        help="The name of file(s)/folder(s) you want to encrypt/decrypt",
+    )
+    return parser.parse_args()
+
+
+def validate_args(
+    paths: list, key_path: Optional[Path] = None
+) -> Tuple[set, Optional[Path], int]:
+    """Run a validation check on arguments"""
+
+    valid_paths = set()
+    fail_count = 0
+    mode = "encrypt" if not key_path else "decrypt"
+
+    if key_path and not key_path.exists():
+        raise FileNotFoundError(f"Key not found: {key_path}")
+
+    for path in paths:
+        path = Path(path)
+
+        if path.is_absolute():
+            raise PermissionError("Root directory path is not allowed")
+        elif not path.exists():
+            Report.log_error(f"{path} does not exists")
+            fail_count += 1
+        elif path.is_file():
+            if path.suffix != ".enc" and key_path:
+                Report.log_error(f"{path} cannot be decrypted")
+                fail_count += 1
+            else:
+                valid_paths.add(path)
+        elif path.is_dir():
+            warning = input(
+                f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] "
+            )
+            if warning.lower().strip() in ["y", "yes"]:
+                valid_paths.update([file for file in path.rglob("*") if file.is_file()])
+            else:
+                valid_paths.update([file for file in path.iterdir() if file.is_file()])
+
+    if not valid_paths:
+        sys.exit(f"No files to {mode}")
+
+    return valid_paths, key_path, fail_count
 
 
 class CryptoTools:
@@ -121,7 +190,7 @@ class KeyManager:
         password: str = key_map["pw_hash"]
         kdf_salt: bytes = base64.b64decode(key_map["salt_b64"])
 
-        return password, kdf_salt, key_map
+        return password, kdf_salt
 
     @staticmethod
     def save_key(key_map: dict) -> None:
@@ -193,7 +262,7 @@ class FileHandler:
             Path(f"{path}.enc") if is_encrypt else Path(path).with_suffix("")
         )
 
-        if output_path.exists() and not confirmation(output_path):
+        if output_path.exists() and not UserPrompts.confirmation(output_path):
             raise OSError(f"{output_path} already exists")
 
         output_path.write_bytes(data)
@@ -206,156 +275,91 @@ class FileHandler:
             try:
                 Path(path).unlink()
             except OSError as e:
-                logging.error(f"Unexpected OS error: {e}")
+                Report.log_error(f"Unexpected OS error: {e}")
                 continue
 
 
-def parse_arguments():
-    """Parsing arguments given"""
+class UserPrompts:
 
-    parser = argparse.ArgumentParser(
-        description="Encrypt or Decrypt file(s) or folder(s)"
-    )
+    @staticmethod
+    def get_encrypt_password() -> str:
+        """Get encryption password from user"""
 
-    group = parser.add_mutually_exclusive_group(required=True)
+        while True:
+            password: str = (
+                getpass.getpass("Password (minimum of 8 characters): ")
+            ).strip()
 
-    group.add_argument(
-        "-e", "--encrypt", help="Encrypt file(s)/folder(s)", action="store_true"
-    )
-    group.add_argument(
-        "-d", "--decrypt", help="Decrypt file(s)/folder(s)", action="store_true"
-    )
-    parser.add_argument(
-        "-k",
-        "--key",
-        type=Path,
-        default=None,
-        help="JSON file path containing key to decrypt",
-    )
-    parser.add_argument(
-        "paths",
-        nargs="+",
-        help="The name of file(s)/folder(s) you want to encrypt/decrypt",
-    )
-    return parser.parse_args()
-
-
-def validate_args(
-    paths: list, key_path: Optional[Path] = None
-) -> Tuple[set, Optional[Path], int]:
-    """Run a validation check on arguments"""
-
-    valid_paths = set()
-    fail_count = 0
-    mode = "encrypt" if not key_path else "decrypt"
-
-    if key_path and not key_path.exists():
-        raise FileNotFoundError(f"Key not found: {key_path}")
-
-    for path in paths:
-        path = Path(path)
-
-        if path.is_absolute():
-            raise PermissionError("Root directory path is not allowed")
-        elif not path.exists():
-            logging.error(f"{path} does not exists")
-            fail_count += 1
-        elif path.is_file():
-            if path.suffix != ".enc" and key_path:
-                logging.error(f"{path} cannot be decrypted")
-                fail_count += 1
+            if not password:
+                print("Please enter a password")
+            elif not 8 <= len(password) <= 32:
+                print("Please enter 8 to 32 characters")
+            elif not password.isascii():
+                print("Password can only contains alphabet, digits, or punctuation")
             else:
-                valid_paths.add(path)
-        elif path.is_dir():
-            warning = input(
-                f"WARNING: Do you wish to {mode} all the files inside the subdirectiories of this folder? [y/N] "
-            )
-            if warning.lower().strip() in ["y", "yes"]:
-                valid_paths.update([file for file in path.rglob("*") if file.is_file()])
+                break
+
+        while True:
+            resubmit: str = (getpass.getpass("Re-enter password: ")).strip()
+
+            if not resubmit:
+                print("Please re-enter your password")
+            elif resubmit != password:
+                print("Password does not match")
             else:
-                valid_paths.update([file for file in path.iterdir() if file.is_file()])
-
-    if not valid_paths:
-        sys.exit(f"No files to {mode}")
-
-    return valid_paths, key_path, fail_count
+                return password
 
 
-def get_encrypt_password() -> str:
-    """Get encryption password from user"""
+    @staticmethod
+    def get_decrypt_password(pw_hash: str) -> str:
+        """Get decryption password from user"""
 
-    while True:
-        password: str = (
-            getpass.getpass("Password (minimum of 8 characters): ")
-        ).strip()
-
-        if not password:
-            print("Please enter a password")
-        elif not 8 <= len(password) <= 32:
-            print("Please enter 8 to 32 characters")
-        elif not password.isascii():
-            print("Password can only contains alphabet, digits, or punctuation")
-        else:
-            break
-
-    while True:
-        resubmit: str = (getpass.getpass("Re-enter password: ")).strip()
-
-        if not resubmit:
-            print("Please re-enter your password")
-        elif resubmit != password:
-            print("Password does not match")
-        else:
+        while True:
+            password: str = getpass.getpass("Password: ")
+            if not bcrypt.checkpw(password.encode(), pw_hash.encode()):
+                print("Incorrect password")
+                continue
             return password
 
 
-def get_decrypt_password(pw_hash: str) -> str:
-    """Get decryption password from user"""
+    @staticmethod
+    def confirmation(path: Path) -> bool:
+        """Prompt user for confirmation if file already exists"""
 
-    while True:
-        password: str = getpass.getpass("Password: ")
-        if not bcrypt.checkpw(password.encode(), pw_hash.encode()):
-            print("Incorrect password")
-            continue
-        return password
-
-
-def confirmation(path: Path) -> bool:
-    """Prompt user for confirmation if file already exists"""
-
-    warning = input(f"WARNING: {path} already exists, do you want to overwrite? [y/N] ")
-    if warning.lower().strip() not in ["y", "yes"]:
-        return False
-    return True
+        warning = input(f"WARNING: {path} already exists, do you want to overwrite? [y/N] ")
+        if warning.lower().strip() not in ["y", "yes"]:
+            return False
+        return True
 
 
-def setup_logging() -> None:
-    """Setup log file"""
+class Report:
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    @staticmethod
+    def log_error(message: str) -> None:
+        """Setup log file if any the log the errors"""
 
-    logging.basicConfig(level=logging.ERROR, filename=f"logs_{timestamp}.log")
+        if not logging.getLogger().hasHandlers():
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            logging.basicConfig(
+                level=logging.ERROR,
+                filename=f"logs_{timestamp}.log",
+                format="%(levelname)s - %(message)s"
+            )
+        
+        logging.error(message)
 
 
-def report(successes: int, fails: int, key_path: Optional[Path] = None) -> str:
-    """Print the report of the run"""
+    @staticmethod
+    def result(successes: int, fails: int, key_path: Optional[Path] = None) -> str:
+        """Print the report of the run"""
 
-    status = "encrypted" if not key_path else "decrypted"
+        status = "encrypted" if not key_path else "decrypted"
 
-    if fails > 0:
-        return f"{status.capitalize()}: {successes} file(s), failed: {fails} file(s), see logs.txt for details"
-    else:
-        return f"Successfully {status} {successes} file(s)"
-
-
-def show_file_list(key_map: dict) -> None:
-    """Show file lists that are available to decrypt in the key file"""
-
-    show = input("Do you wish to see list of files that can be decrypted? [y/N] ")
-    if show.lower().strip() in ["y", "yes"]:
-        print("Encrypted files:")
-        for i, file_list in enumerate(key_map["encrypted_files"]):
-            print(f"{i+1}. {file_list['original_path']}")
+        if fails > 0:
+            return f"{status.capitalize()}: {successes} file(s), failed: {fails} file(s), see logs.txt for details"
+        else:
+            return f"Successfully {status} {successes} file(s)"
 
 
 if __name__ == "__main__":
