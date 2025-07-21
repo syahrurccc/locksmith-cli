@@ -70,11 +70,15 @@ def main():
                 Report.log_error(f"{path} Error: {e}")
                 fail_count += 1
 
-    FileHandler.delete_paths(deleted_paths)
+    try:
+        FileHandler.delete_paths(deleted_paths)
+    except OSError as e:
+        Report.log_error(f"Unexpected OS error: {e}")
+
     print(Report.result(len(deleted_paths), fail_count, key_path))
 
 
-def parse_arguments():
+def parse_arguments(test_args: Optional[list[str]] = None) -> argparse.ArgumentParser:
     """Parsing arguments given"""
 
     parser = argparse.ArgumentParser(
@@ -99,13 +103,14 @@ def parse_arguments():
     parser.add_argument(
         "paths",
         nargs="+",
+        type=Path,
         help="The name of file(s)/folder(s) you want to encrypt/decrypt",
     )
-    return parser.parse_args()
+    return parser.parse_args(test_args)
 
 
 def validate_args(
-    paths: list, key_path: Optional[Path] = None
+    paths: list[Path], key_path: Optional[Path] = None
 ) -> Tuple[set, Optional[Path], int]:
     """Run a validation check on arguments"""
 
@@ -117,8 +122,6 @@ def validate_args(
         raise FileNotFoundError(f"Key not found: {key_path}")
 
     for path in paths:
-        path = Path(path)
-
         if path.is_absolute():
             raise PermissionError("Root directory path is not allowed")
         elif not path.exists():
@@ -182,7 +185,7 @@ class CryptoTools:
 class KeyManager:
 
     @staticmethod
-    def load_key(key_path: Path) -> Tuple[str, bytes, dict]:
+    def load_key(key_path: Path) -> Tuple[str, bytes]:
         """Load password hash and salt hash from json file"""
 
         key_map: dict = json.loads(key_path.read_text())
@@ -229,7 +232,7 @@ class KeyManager:
         key_map = {
             "pw_hash": pw_hash.decode(),
             "salt_b64": kdf_salt.decode(),
-            "encrypted_files": [],
+            "encrypted_files": []
         }
 
         return key_map
@@ -249,17 +252,17 @@ class KeyManager:
 class FileHandler:
 
     @staticmethod
-    def read_file(path: str) -> bytes:
+    def read_file(path: Path) -> bytes:
         """Read given file then store it as bytes"""
 
-        return Path(path).read_bytes()
+        return path.read_bytes()
 
     @staticmethod
     def write_file(data: bytes, path: Path, is_encrypt: bool = False) -> None:
         """Write file to computer's storage"""
 
         output_path: Path = (
-            Path(f"{path}.enc") if is_encrypt else Path(path).with_suffix("")
+            Path(f"{path}.enc") if is_encrypt else path.with_suffix("")
         )
 
         if output_path.exists() and not UserPrompts.confirmation(output_path):
@@ -268,16 +271,12 @@ class FileHandler:
         output_path.write_bytes(data)
 
     @staticmethod
-    def delete_paths(paths: list) -> None:
+    def delete_paths(paths: list[Path]) -> None:
         """Delete successfully processed files"""
 
         for path in paths:
-            try:
-                Path(path).unlink()
-            except OSError as e:
-                Report.log_error(f"Unexpected OS error: {e}")
-                continue
-
+            path.unlink()
+                
 
 class UserPrompts:
 
@@ -309,7 +308,6 @@ class UserPrompts:
             else:
                 return password
 
-
     @staticmethod
     def get_decrypt_password(pw_hash: str) -> str:
         """Get decryption password from user"""
@@ -321,12 +319,13 @@ class UserPrompts:
                 continue
             return password
 
-
     @staticmethod
     def confirmation(path: Path) -> bool:
         """Prompt user for confirmation if file already exists"""
 
-        warning = input(f"WARNING: {path} already exists, do you want to overwrite? [y/N] ")
+        warning = input(
+            f"WARNING: {path} already exists, do you want to overwrite? [y/N] "
+        )
         if warning.lower().strip() not in ["y", "yes"]:
             return False
         return True
@@ -339,16 +338,15 @@ class Report:
         """Setup log file if any the log the errors"""
 
         if not logging.getLogger().hasHandlers():
-            
+
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             logging.basicConfig(
                 level=logging.ERROR,
                 filename=f"logs_{timestamp}.log",
-                format="%(levelname)s - %(message)s"
+                format="%(levelname)s - %(message)s",
             )
-        
-        logging.error(message)
 
+        logging.error(message)
 
     @staticmethod
     def result(successes: int, fails: int, key_path: Optional[Path] = None) -> str:
