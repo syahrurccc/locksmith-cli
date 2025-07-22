@@ -10,7 +10,7 @@ Locksmith CLI is a lightweight, Python-based command-line tool for encrypting an
 - [How to Use](#how-to-use)
 
 ## Key Features
-- AES-128 Encryption — Secure file encryption using the cryptography library.
+- AES-128-CBC Encryption — Secure file encryption using the cryptography library.
 - Intelligent Prompts — Clear, interactive prompts for entering and confirming passwords.
 - Password Verification — Ensures passwords match during encryption and checks against stored hashes during decryption.
 - Overwrite Warnings — Notifies you when a file will be overwritten before proceeding.
