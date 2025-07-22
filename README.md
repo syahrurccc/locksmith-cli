@@ -1,7 +1,7 @@
 # Locksmith CLI
 ### Description: 
 🔐 Locksmith CLI – Simple Command-Line File Encryption & Decryption
-Locksmith CLI is a lightweight, Python-based command-line tool for encrypting and decrypting files with secure password-based encryption. Designed with simplicity and clarity in mind, Locksmith provides a guided, user-friendly experience while maintaining robust protection using AES-256 standards.
+Locksmith CLI is a lightweight, Python-based command-line tool for encrypting and decrypting files with secure password-based encryption. Designed with simplicity and clarity in mind, Locksmith provides a guided, user-friendly experience while maintaining robust protection using AES-128-CBC standards.
 
 ## Content
 - [Key Features](#key-features)
@@ -80,7 +80,7 @@ Design trade-off: Fernet is chosen for safety, simplicity, and built-in authenti
 Single password = single point of failure: If the password is forgotten, the data is unrecoverable.
 
 ### Size limits
-Since fernet encrypts/decrypts everything in memory. This makes it unsuitable for large files, as it may lead to high RAM usage or crashes on constrained systems.
+Since fernet encrypts/decrypts everything in memory. This makes it unsuitable for large files (>500MB), as it may lead to high RAM usage or crashes on constrained systems.
 
 ## How to Use
 ### Using Locksmith CLI 
