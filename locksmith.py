@@ -232,7 +232,7 @@ class KeyManager:
         key_map = {
             "pw_hash": pw_hash.decode(),
             "salt_b64": kdf_salt.decode(),
-            "encrypted_files": []
+            "encrypted_files": [],
         }
 
         return key_map
@@ -261,9 +261,7 @@ class FileHandler:
     def write_file(data: bytes, path: Path, is_encrypt: bool = False) -> None:
         """Write file to computer's storage"""
 
-        output_path: Path = (
-            Path(f"{path}.enc") if is_encrypt else path.with_suffix("")
-        )
+        output_path: Path = Path(f"{path}.enc") if is_encrypt else path.with_suffix("")
 
         if output_path.exists() and not UserPrompts.confirmation(output_path):
             raise OSError(f"{output_path} already exists")
@@ -276,7 +274,7 @@ class FileHandler:
 
         for path in paths:
             path.unlink()
-                
+
 
 class UserPrompts:
 
@@ -355,7 +353,7 @@ class Report:
         status = "encrypted" if not key_path else "decrypted"
 
         if fails > 0:
-            return f"{status.capitalize()}: {successes} file(s), failed: {fails} file(s), see logs.txt for details"
+            return f"{status.capitalize()}: {successes} file(s), failed: {fails} file(s), see logs for details"
         else:
             return f"Successfully {status} {successes} file(s)"
 
