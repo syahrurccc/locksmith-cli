@@ -82,29 +82,29 @@ def parse_arguments(test_args: Optional[list[str]] = None) -> argparse.ArgumentP
     """Parsing arguments given"""
 
     parser = argparse.ArgumentParser(
-        description="Encrypt or Decrypt file(s) or folder(s)"
+        description="encrypt or Decrypt file(s) or folder(s)"
     )
 
     group = parser.add_mutually_exclusive_group(required=True)
 
     group.add_argument(
-        "-e", "--encrypt", help="Encrypt file(s)/folder(s)", action="store_true"
+        "-e", "--encrypt", help="encrypt file(s)/folder(s)", action="store_true"
     )
     group.add_argument(
-        "-d", "--decrypt", help="Decrypt file(s)/folder(s)", action="store_true"
+        "-d", "--decrypt", help="eecrypt file(s)/folder(s)", action="store_true"
     )
     parser.add_argument(
         "-k",
         "--key",
         type=Path,
         default=None,
-        help="JSON file path containing key to decrypt",
+        help="JSON file path containing key to decrypt files",
     )
     parser.add_argument(
         "paths",
         nargs="+",
         type=Path,
-        help="The name of file(s)/folder(s) you want to encrypt/decrypt",
+        help="the name of file(s)/folder(s) you want to encrypt/decrypt",
     )
     return parser.parse_args(test_args)
 
